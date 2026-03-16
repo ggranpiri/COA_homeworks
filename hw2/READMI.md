@@ -7,6 +7,11 @@
 ```shell
   docker exec -it hw2-db-1 psql -U app -d marketplace
 ```
+## Прочитать логи
+```shell
+  docker logs hw2-api-1 --tail 5
+```
+
 ## Регистрация
 ### Создание SELLER'а
 ```shell
@@ -53,7 +58,7 @@
 
 ### Мягкое удаление
 ```shell
-  curl -i -X DELETE http://localhost:8000/products/1 -H "Authorization: Bearer $TOKEN"
+  curl -i -X DELETE http://localhost:8000/products/1 -H "Authorization: Bearer $SELLER"
 ```
 - в `products` изменился статус на ARCHIVED
 

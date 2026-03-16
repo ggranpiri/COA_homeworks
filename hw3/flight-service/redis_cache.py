@@ -3,12 +3,28 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-import redis
+from redis.sentinel import Sentinel
 
-from config import REDIS_TTL_SECONDS, REDIS_URL
+from config import (
+    REDIS_DB,
+    REDIS_MASTER_NAME,
+    REDIS_SENTINEL_HOST,
+    REDIS_SENTINEL_PORT,
+    REDIS_TTL_SECONDS,
+)
 
 
-redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+sentinel = Sentinel(
+    [(REDIS_SENTINEL_HOST, REDIS_SENTINEL_PORT)],
+    socket_timeout=1,
+)
+
+redis_client = sentinel.master_for(
+    REDIS_MASTER_NAME,
+    socket_timeout=1,
+    db=REDIS_DB,
+    decode_responses=True,
+)
 
 
 def _json_default(obj: Any):

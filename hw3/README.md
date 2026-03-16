@@ -44,14 +44,14 @@ curl -X POST http://localhost:8003/bookings \
   }'
 ```
 
-Проверка готового бронирования из seed
+Получение бронирования
 ```shell
 curl "http://localhost:8003/bookings/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 ```
 
 Список бронирований пользователя
 ```shell
-curl "http://localhost:8003/bookings?user_id=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+curl "http://localhost:8003/bookings?user_id=cccccccc-cccc-cccc-cccc-cccccccccccc"
 ```
 Отмена бронирования
 ```shell
@@ -67,7 +67,7 @@ flights (резервации)
 ```sql
 select id, booking_id, flight_id, seat_count, status
 from seat_reservations
-order by created_at desc
+order by created_at desc;
 ```
 booking (бронирования)
 ```sql
@@ -107,24 +107,22 @@ curl "http://localhost:8003/flights/11111111-1111-1111-1111-111111111111"
 
 ## 7. Redis для кеширования
 
-Redis жив: `docker exec -it flight-redis redis-cli ping`
-
-Отчистка логов `docker exec -it flight-redis redis-cli flushall  `
+Отчистка кэша: `docker exec -it flight-redis redis-cli flushall  `
 
 ```shell
 curl "http://localhost:8003/flights?origin=SVO&destination=LED&date=2026-03-20T00:00:00"
 ```
 
-Ключи создаются: `docker exec -it flight-redis redis-cli keys "*"`
+Ключи создаются: `docker exec -it redis-master redis-cli keys "*"`
 
 В логах `docker compose logs -f flight-service ` 
 - при добавлении: `CACHE MISS search:SVO:LED:2026-03-20`
 - при чтении: `CACHE HIT search:SVO:LED:2026-03-20`
 
-TTL есть: `docker exec -it flight-redis redis-cli ttl search:SVO:LED:2026-03-20`
+TTL есть: `docker exec -it redis-master redis-cli ttl search:SVO:LED:2026-03-20`
 
 
-## 8. 
+## 8. Retry при вызовах Flight Service 
 booking-service/grpc_client.py 
 
 ```python
@@ -173,4 +171,81 @@ booking-service  | Retry attempt 1
 booking-service  | Retry attempt 2
 booking-service  | Retry attempt 3
 booking-service  | INFO:     192.168.65.1:61651 - "GET /flights/11111111-1111-1111-1111-111111111111 HTTP/1.1" 503 Service Unavailable
+```
+
+## 9. Redis в кластерном режиме
+Поднялись 3 контейнера: `docker ps`
+
+Sentinel знает мастер: `docker exec -it redis-sentinel redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster`
+
+1) "redis-master"
+2) "6379"
+   
+Мастер: `docker exec -it redis-replica redis-cli info replication`
+
+Реплика: `docker exec -it redis-master redis-cli info replication`
+
+## 10. Circuit Breaker
+booking-service/grpc_client.py
+```python
+import time
+
+
+class CircuitBreaker:
+    def __init__(self):
+        self.state = "CLOSED"
+        self.failure_count = 0
+        self.opened_at = None
+        self.half_open_calls = 0
+
+    def before_call(self):
+        if self.state == "OPEN":
+            if self.opened_at is None:
+                print("CIRCUIT BREAKER OPEN -> reject request", flush=True)
+                raise CircuitBreakerOpenError("flight service circuit breaker is open")
+
+            if time.time() - self.opened_at >= CB_RECOVERY_TIMEOUT:
+                print("CIRCUIT BREAKER OPEN -> HALF_OPEN", flush=True)
+                self.state = "HALF_OPEN"
+                self.half_open_calls = 0
+            else:
+                print("CIRCUIT BREAKER OPEN -> reject request", flush=True)
+                raise CircuitBreakerOpenError("flight service circuit breaker is open")
+
+        if self.state == "HALF_OPEN":
+            if self.half_open_calls >= CB_HALF_OPEN_MAX_CALLS:
+                print("CIRCUIT BREAKER HALF_OPEN -> reject extra probe", flush=True)
+                raise CircuitBreakerOpenError("flight service circuit breaker is half-open")
+
+            self.half_open_calls += 1
+            print(f"CIRCUIT BREAKER HALF_OPEN -> allow probe #{self.half_open_calls}", flush=True)
+
+    def record_success(self):
+        if self.state != "CLOSED":
+            print(f"CIRCUIT BREAKER {self.state} -> CLOSED", flush=True)
+
+        self.state = "CLOSED"
+        self.failure_count = 0
+        self.opened_at = None
+        self.half_open_calls = 0
+
+    def record_failure(self):
+        if self.state == "HALF_OPEN":
+            print("CIRCUIT BREAKER HALF_OPEN -> OPEN", flush=True)
+            self.state = "OPEN"
+            self.opened_at = time.time()
+            self.half_open_calls = 0
+            return
+
+        self.failure_count += 1
+        print(
+            f"CIRCUIT BREAKER CLOSED failure_count={self.failure_count}/{CB_FAILURE_THRESHOLD}",
+            flush=True,
+        )
+
+        if self.failure_count >= CB_FAILURE_THRESHOLD:
+            print("CIRCUIT BREAKER CLOSED -> OPEN", flush=True)
+            self.state = "OPEN"
+            self.opened_at = time.time()
+
 ```

@@ -24,6 +24,9 @@ class CircuitBreakerOpenError(Exception):
     pass
 
 
+import time
+
+
 class CircuitBreaker:
     def __init__(self):
         self.state = "CLOSED"
@@ -34,19 +37,29 @@ class CircuitBreaker:
     def before_call(self):
         if self.state == "OPEN":
             if self.opened_at is None:
+                print("CIRCUIT BREAKER OPEN -> reject request", flush=True)
                 raise CircuitBreakerOpenError("flight service circuit breaker is open")
+
             if time.time() - self.opened_at >= CB_RECOVERY_TIMEOUT:
+                print("CIRCUIT BREAKER OPEN -> HALF_OPEN", flush=True)
                 self.state = "HALF_OPEN"
                 self.half_open_calls = 0
             else:
+                print("CIRCUIT BREAKER OPEN -> reject request", flush=True)
                 raise CircuitBreakerOpenError("flight service circuit breaker is open")
 
         if self.state == "HALF_OPEN":
             if self.half_open_calls >= CB_HALF_OPEN_MAX_CALLS:
+                print("CIRCUIT BREAKER HALF_OPEN -> reject extra probe", flush=True)
                 raise CircuitBreakerOpenError("flight service circuit breaker is half-open")
+
             self.half_open_calls += 1
+            print(f"CIRCUIT BREAKER HALF_OPEN -> allow probe #{self.half_open_calls}", flush=True)
 
     def record_success(self):
+        if self.state != "CLOSED":
+            print(f"CIRCUIT BREAKER {self.state} -> CLOSED", flush=True)
+
         self.state = "CLOSED"
         self.failure_count = 0
         self.opened_at = None
@@ -54,16 +67,22 @@ class CircuitBreaker:
 
     def record_failure(self):
         if self.state == "HALF_OPEN":
+            print("CIRCUIT BREAKER HALF_OPEN -> OPEN", flush=True)
             self.state = "OPEN"
             self.opened_at = time.time()
             self.half_open_calls = 0
             return
 
         self.failure_count += 1
+        print(
+            f"CIRCUIT BREAKER CLOSED failure_count={self.failure_count}/{CB_FAILURE_THRESHOLD}",
+            flush=True,
+        )
+
         if self.failure_count >= CB_FAILURE_THRESHOLD:
+            print("CIRCUIT BREAKER CLOSED -> OPEN", flush=True)
             self.state = "OPEN"
             self.opened_at = time.time()
-
 
 breaker = CircuitBreaker()
 
