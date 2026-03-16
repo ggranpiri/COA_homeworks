@@ -1,0 +1,137 @@
+version: "3.9"
+
+services:
+  booking-db:
+    image: postgres:16
+    container_name: booking-db
+    environment:
+      POSTGRES_DB: ${BOOKING_DB_NAME}
+      POSTGRES_USER: ${BOOKING_DB_USER}
+      POSTGRES_PASSWORD: ${BOOKING_DB_PASSWORD}
+    ports:
+      - "${BOOKING_DB_PORT}:5432"
+    volumes:
+      - booking_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BOOKING_DB_USER} -d ${BOOKING_DB_NAME}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  flight-db:
+    image: postgres:16
+    container_name: flight-db
+    environment:
+      POSTGRES_DB: ${FLIGHT_DB_NAME}
+      POSTGRES_USER: ${FLIGHT_DB_USER}
+      POSTGRES_PASSWORD: ${FLIGHT_DB_PASSWORD}
+    ports:
+      - "${FLIGHT_DB_PORT}:5432"
+    volumes:
+      - flight_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FLIGHT_DB_USER} -d ${FLIGHT_DB_NAME}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: flight-redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  flight-migrator:
+    image: postgres:16
+    container_name: flight-migrator
+    depends_on:
+      flight-db:
+        condition: service_healthy
+    volumes:
+      - ./flight-service/migrations:/migrations
+    environment:
+      PGPASSWORD: ${FLIGHT_DB_PASSWORD}
+    command: >
+      sh -c "
+      psql -v ON_ERROR_STOP=1 -h flight-db -U ${FLIGHT_DB_USER} -d ${FLIGHT_DB_NAME} -f /migrations/V1__init.sql &&
+      psql -v ON_ERROR_STOP=1 -h flight-db -U ${FLIGHT_DB_USER} -d ${FLIGHT_DB_NAME} -f /migrations/V2__insert_data.sql
+      "
+
+  booking-migrator:
+    image: postgres:16
+    container_name: booking-migrator
+    depends_on:
+      booking-db:
+        condition: service_healthy
+    volumes:
+      - ./booking-service/migrations:/migrations
+    environment:
+      PGPASSWORD: ${BOOKING_DB_PASSWORD}
+    command: >
+      sh -c "
+      psql -v ON_ERROR_STOP=1 -h booking-db -U ${BOOKING_DB_USER} -d ${BOOKING_DB_NAME} -f /migrations/V1__init.sql &&
+      psql -v ON_ERROR_STOP=1 -h booking-db -U ${BOOKING_DB_USER} -d ${BOOKING_DB_NAME} -f /migrations/V2__insert_data.sql
+      "
+
+  flight-service:
+    build:
+      context: .
+      dockerfile: ./flight-service/Dockerfile
+    container_name: flight-service
+    depends_on:
+      flight-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flight-migrator:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${FLIGHT_DB_USER}:${FLIGHT_DB_PASSWORD}@flight-db:5432/${FLIGHT_DB_NAME}
+      REDIS_URL: redis://redis:6379/0
+      GRPC_API_KEY: ${GRPC_API_KEY}
+      REDIS_TTL_SECONDS: ${REDIS_TTL_SECONDS}
+      FLIGHT_SERVICE_PORT: ${FLIGHT_SERVICE_PORT}
+    ports:
+      - "${FLIGHT_SERVICE_PORT}:50051"
+
+  booking-service:
+    build:
+      context: .
+      dockerfile: ./booking-service/Dockerfile
+    container_name: booking-service
+    depends_on:
+      booking-db:
+        condition: service_healthy
+      booking-migrator:
+        condition: service_completed_successfully
+      flight-service:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${BOOKING_DB_USER}:${BOOKING_DB_PASSWORD}@booking-db:5432/${BOOKING_DB_NAME}
+      FLIGHT_SERVICE_HOST: flight-service
+      FLIGHT_SERVICE_PORT: 50051
+      GRPC_API_KEY: ${GRPC_API_KEY}
+      GRPC_TIMEOUT_SECONDS: ${GRPC_TIMEOUT_SECONDS}
+      GRPC_RETRY_ATTEMPTS: ${GRPC_RETRY_ATTEMPTS}
+      GRPC_BACKOFF_1: ${GRPC_BACKOFF_1}
+      GRPC_BACKOFF_2: ${GRPC_BACKOFF_2}
+      GRPC_BACKOFF_3: ${GRPC_BACKOFF_3}
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD}
+      CB_RECOVERY_TIMEOUT: ${CB_RECOVERY_TIMEOUT}
+      CB_HALF_OPEN_MAX_CALLS: ${CB_HALF_OPEN_MAX_CALLS}
+      BOOKING_SERVICE_PORT: ${BOOKING_SERVICE_PORT}
+    ports:
+      - "${BOOKING_SERVICE_PORT}:8000"
+
+volumes:
+  booking_db_data:
+  flight_db_data:
